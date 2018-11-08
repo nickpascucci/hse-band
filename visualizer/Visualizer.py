@@ -1,4 +1,4 @@
-import random, math, pygame
+import sys, random, math, pygame, csv
 from pygame.locals import *
 
 # =================================
@@ -9,7 +9,7 @@ TITLE = "Visualizer"
 WIN_SIZE = [640, 480]
 # input
 JOY_DEAD_ZONE = 0.2
-JOY_AXIS_SCALE = 0.01
+JOY_AXIS_SCALE = 0.0015
 # colors
 COLOR_BACKGROUND = 20, 20, 40
 COLOR_GOAL_TEST_INACTIVE = 255, 0, 0
@@ -23,6 +23,8 @@ GOAL_MIN_VALUE = 0.2
 GOAL_MAX_VALUE = 0.8
 GOAL_INTERVAL_TIME = 2000  # milliseconds
 GOALS_PER_TEST = 10
+GOAL_TEST_MODE_INTENSITY = 0
+GOAL_TEST_MODE_FREQUENCY = 1
 # user
 USER_HALF_THICKNESS = 3
 # other
@@ -45,10 +47,16 @@ goalTweenActive = False
 goalTweenTimeStart = 0.0
 goalValues = []
 goalTestActive = False
+goalTestStartTime = 0.0
 lastTestGoalSetTime = 0.0
+goalTestMode = GOAL_TEST_MODE_INTENSITY
+numTestsRun = 0
 # user
 targetUser = 0.5
 currentUser = -1.0
+# writer
+testLogDataRows = None
+outputFilePrefix = "DEFAULT"
 
 
 # =================================
@@ -201,29 +209,56 @@ def try_set_new_goal(doTween=True, randomized=False) -> bool:
     return True
 
 
-def toggle_goal_test_active():
+def set_goal_test_active(active: bool):
     """toggles the active state of the goal test"""
 
     global goalTestActive
+    global numTestsRun
+    global testLogDataRows
+    global goalTestStartTime
 
-    # if currently active
-    if goalTestActive:
+    # if setting inactive
+    if not active:
 
         # turn off the test
         goalTestActive = False
 
-    # otherwise (test not active)
+        # write out the log data
+        with open(format("%s_%d.csv" % (outputFilePrefix, numTestsRun)), 'w', newline='') as csvfile:
+            logWriter = csv.writer(csvfile)
+            logWriter.writerows(testLogDataRows)
+
+        # clear the testLog
+        testLogDataRows = None
+
+    # otherwise (setting active)
     else:
 
-        # create some new test values
+        # create some new goal values
         repopulate_goal_list()
 
-        # attempt to activate the test (will fail if no goal values available)
-        goalTestActive = try_set_new_goal(doTween=False)
+        # attempt to set a new goal (will fail if no goal values available)
+        if try_set_new_goal(doTween=False):
+
+            # if successful, activate test
+            goalTestActive = True
+            numTestsRun = numTestsRun + 1
+            goalTestStartTime = pygame.time.get_ticks()
+
+            # create object to hold log data for this test
+            testLogDataRows = [['Time', 'Current', 'Target', 'Error']]
 
 
 def update_logic_goal():
     """handles logic updates for the goal"""
+
+    # if we have a running log
+    if testLogDataRows is not None:
+
+        # add stuff to it
+        elapsedTime = pygame.time.get_ticks() - goalTestStartTime
+        error = targetUser - targetGoal
+        testLogDataRows.append([str(elapsedTime), str(targetUser), str(targetGoal), str(error)])
 
     # if goal test is active
     if goalTestActive:
@@ -231,15 +266,13 @@ def update_logic_goal():
         # if it's time for a goal change
         currentTime = pygame.time.get_ticks()
         elapsedTimeSinceLastGoalChange = currentTime - lastTestGoalSetTime;
-
-        print ("elapsedTimeSinceLastGoalChange = " + str(elapsedTimeSinceLastGoalChange))
         if elapsedTimeSinceLastGoalChange > GOAL_INTERVAL_TIME:
 
             # try to set a new goal
             if not try_set_new_goal():
 
                 # end test if cannot set new goal value
-                toggle_goal_test_active()
+                set_goal_test_active(False)
 
 
 def update_draw_goal():
@@ -320,6 +353,7 @@ def start():
     random.seed()
     clock = pygame.time.Clock()
     pygame.init()
+    pygame.key.set_repeat(300, 15)
 
     # screen initialization
     pygame.display.set_caption("Visualizer")
@@ -371,11 +405,25 @@ def process_input() -> int:
 
         # toggle testing on/off
         if e.type == KEYUP and e.key == K_t:
-            toggle_goal_test_active()
+            set_goal_test_active(not goalTestActive)
+
+        # change to frequency mode
+        if e.type == KEYUP and e.key == K_f:
+            goalTestMode = GOAL_TEST_MODE_FREQUENCY
+
+        # change to intensity mode
+        if e.type == KEYUP and e.key == K_i:
+            goalTestMode = GOAL_TEST_MODE_INTENSITY
 
         # move goal to random location
         if e.type == KEYUP and e.key == K_g:
             try_set_new_goal(randomized=True)
+
+        # debug keyboard input
+        if e.type == KEYDOWN and e.key == K_UP:
+            targetUser = min(max(targetUser - 0.01, 0), 1)
+        if e.type == KEYDOWN and e.key == K_DOWN:
+            targetUser = min(max(targetUser + 0.01, 0), 1)
 
     # if we have a gamepad
     if gamepad is not None:
@@ -383,16 +431,21 @@ def process_input() -> int:
         # handle input from right stick
         axis = gamepad.get_axis(3)
         if abs(axis) > JOY_DEAD_ZONE:
-
             sign = 1 if axis >= 0 else -1
-            scaledValue = JOY_AXIS_SCALE * (abs(axis) - JOY_DEAD_ZONE)
+            scaledValue = clock.get_time() * JOY_AXIS_SCALE * (abs(axis) - JOY_DEAD_ZONE)
             targetUser = min(max(targetUser + sign * scaledValue, 0), 1)
 
     return 1
 
 
-def main():
+def main(argv):
     """This is the main loop"""
+
+    global outputFilePrefix
+
+    # parse command line
+    if len(argv) > 0:
+        outputFilePrefix = argv[0]
 
     # initialization
     start()
@@ -410,13 +463,13 @@ def main():
 
         # boilerplate
         pygame.display.update()
-        clock.tick(60)
+        clock.tick(120)
 
 
 # =================================
 # STARTUP
 # =================================
 if __name__ == '__main__':
-    main()
+    main(sys.argv[1:])
 
 
