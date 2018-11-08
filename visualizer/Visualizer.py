@@ -1,10 +1,15 @@
 import random, math, pygame
 from pygame.locals import *
 
+# =================================
 # CONSTANTS
+# =================================
 # app
 TITLE = "Visualizer"
-WINSIZE = [640, 480]
+WIN_SIZE = [640, 480]
+# input
+JOY_DEAD_ZONE = 0.2
+JOY_AXIS_SCALE = 0.01
 # colors
 COLOR_BACKGROUND = 20, 20, 40
 COLOR_GOAL = 255, 0, 0
@@ -20,10 +25,14 @@ STRIPE_GAP_START = 15
 STRIPE_GAP_END = 25
 STRIPE_CYCLE_SIZE = 40
 
-# GLOBALS
+# =================================
+# VARS
+# =================================
 # app
 clock = None
 screen = None
+# input
+gamepad = None
 # goal
 targetGoal = 0.0
 currentGoal = 0.0
@@ -33,19 +42,17 @@ goalTweenTimeStart = 0.0
 targetUser = 0.5
 currentUser = 0.5
 
-mouse_pos = (0, 0)
-mouse_down = False
-mouse_scale = 0.0005
-mouse_dead = 1
-mouse_max = 100
 
-
-def interpolate(a : float, b : float, t : float, p : float) -> float:
+# =================================
+# HELPERS
+# =================================
+def interpolate(a: float, b: float, t: float, p: float) -> float:
     "interpolate from a to b with parameter t and power p"
 
     return (b - a) * (t ** p) + a
 
-def draw_circle(center : (float, float), radius : float, color):
+
+def draw_circle(center: (float, float), radius: float, drawColor):
 
     # determine bar bounds
     xMin, xMax = center[0] - radius, center[0] + radius
@@ -61,24 +68,25 @@ def draw_circle(center : (float, float), radius : float, color):
             if xDist ** 2 + yDist ** 2 <= radius ** 2:
 
                 # draw pixel as specified color
-                screen.set_at((x, y), color)
+                screen.set_at((x, y), drawColor)
 
-def draw_horizontal_bar(centerY, halfThickness, color, striped=False):
+
+def draw_horizontal_bar(centerY, halfThickness, drawColor, striped=False):
     "draws a horizontal bar on the screen"
 
     # determine bar bounds
     barMinY = max(0, centerY - halfThickness)
-    barMaxY = min(WINSIZE[1]-1, centerY + halfThickness)
+    barMaxY = min(WIN_SIZE[1] - 1, centerY + halfThickness)
 
     # go through each pixel row that the bar will occupy
     for y in range(barMinY, barMaxY+1):
-        for x in range(WINSIZE[0]):
+        for x in range(WIN_SIZE[0]):
 
             # if not striped
             if striped == False:
 
                 # just draw pixel as specified color
-                screen.set_at((x, y), color)
+                screen.set_at((x, y), drawColor)
 
             # otherwise (if striped)
             else:
@@ -88,7 +96,7 @@ def draw_horizontal_bar(centerY, halfThickness, color, striped=False):
                 if subX < STRIPE_GAP_START or subX >= STRIPE_GAP_END:
 
                     # draw pixel as specified color
-                    screen.set_at((x, y), color)
+                    screen.set_at((x, y), drawColor)
 
                 # otherwise (in gap zone)
                 else:
@@ -96,14 +104,19 @@ def draw_horizontal_bar(centerY, halfThickness, color, striped=False):
                     # draw pixel as specified color
                     screen.set_at((x, y), COLOR_BACKGROUND)
 
-def draw_current_goal(color):
+
+# =================================
+# GOAL
+# =================================
+def draw_goal_bar(drawColor):
     "draws bar of specified color at location of currentGoal"
 
     # convert [0, 1] value to pixels
-    targetCenterY = math.trunc(currentGoal * WINSIZE[1] + 0.5)
+    targetCenterY = math.trunc(currentGoal * WIN_SIZE[1] + 0.5)
 
     # draw bar at pixel coordinates
-    draw_horizontal_bar(targetCenterY, GOAL_HALF_THICKNESS, color, striped = True)
+    draw_horizontal_bar(targetCenterY, GOAL_HALF_THICKNESS, drawColor, striped = True)
+
 
 def set_new_goal(doTween=True):
     "sets the goal to a new random value"
@@ -126,13 +139,14 @@ def set_new_goal(doTween=True):
     else:
 
         # clear the old goal
-        draw_current_goal(COLOR_BACKGROUND)
+        draw_goal_bar(COLOR_BACKGROUND)
 
         # set currentGoal directly
         currentGoal = targetGoal
 
         # draw new goal
-        draw_current_goal(COLOR_GOAL)
+        draw_goal_bar(COLOR_GOAL)
+
 
 def update_goal():
     "handles updates for the goal bar"
@@ -144,7 +158,7 @@ def update_goal():
     if goalTweenActive:
 
         # clear the old goal
-        draw_current_goal(COLOR_BACKGROUND)
+        draw_goal_bar(COLOR_BACKGROUND)
 
         # if tween time has expired
         currentTime = pygame.time.get_ticks()
@@ -165,65 +179,49 @@ def update_goal():
             currentGoal = interpolate(currentGoal, targetGoal, t, 2)
 
     # draw the new goal
-    draw_current_goal(COLOR_GOAL)
+    draw_goal_bar(COLOR_GOAL)
 
-def draw_current_user(color) -> None:
-    "draws bar of specified color at location of currentUser"
+
+# =================================
+# USER
+# =================================
+def draw_user_bar(color) -> None:
+    """draws bar of specified color at location of currentUser"""
 
     # convert [0, 1] value to pixels
-    userCenterY = math.trunc(currentUser * WINSIZE[1] + 0.5)
+    userCenterY = math.trunc(currentUser * WIN_SIZE[1] + 0.5)
 
     # draw bar at pixel coordinates
     draw_horizontal_bar(userCenterY, USER_HALF_THICKNESS, color)
 
+
 def update_user():
-    "update funciton for the user object"
+    """update function for the user object"""
 
     global currentUser
-    global targetUser
-
-    if mouse_down:
-
-        draw_circle(mouse_pos, mouse_dead, COLOR_CIRCLE)
-        currentMousePos = pygame.mouse.get_pos()
-        yDiff = currentMousePos[1] - mouse_pos[1];
-        sign = 1 if yDiff >= 0 else -1
-        yDiff = abs(yDiff)
-        yDiff = max(yDiff - mouse_dead, 0)
-        targetUser = min(max(targetUser + sign * yDiff * mouse_scale, 0), 1)
 
     # if current and target user values are not the same
     if targetUser != currentUser:
 
         # clear the old user
-        draw_current_user(COLOR_BACKGROUND)
+        draw_user_bar(COLOR_BACKGROUND)
 
         # set currentUser directly
         currentUser = targetUser
 
     # draw new user
-    draw_current_user(COLOR_USER)
+    draw_user_bar(COLOR_USER)
 
+
+# =================================
+# GENERAL
+# =================================
 def start():
     "initialization Fucntion - called before first update"
 
-    global stars
-    global clock
-    global screen
-
-    # general initialization
-    random.seed()
-    clock = pygame.time.Clock()
-
-    # screen initialization
-    pygame.init()
-    screen = pygame.display.set_mode(WINSIZE)
-    pygame.display.set_caption("Visualizer")
-    screen.fill(COLOR_BACKGROUND)
-
-    # custom initializtion
     set_new_goal(doTween = False)
-    draw_current_user(COLOR_USER)
+    draw_user_bar(COLOR_USER)
+
 
 def update():
     "Update Fucntion - called once per frame"
@@ -234,12 +232,12 @@ def update():
     # update the user
     update_user()
 
+
 def process_input() -> int:
-    "Receives and processes input"
+    """Receives and processes input"""
 
     global targetUser
-    global mouse_pos
-    global mouse_down
+    global gamepad
 
     # look at all current events
     for e in pygame.event.get():
@@ -248,31 +246,52 @@ def process_input() -> int:
         if e.type == QUIT or (e.type == KEYDOWN and e.key == K_ESCAPE):
             return 0
 
-        # change user location
-        elif e.type == MOUSEBUTTONDOWN and e.button == 1:
-            mouse_pos = e.pos
-            mouse_down = True
-        elif e.type == MOUSEBUTTONUP and e.button == 1:
-            mouse_down = False
-
-        elif e.type == KEYDOWN and e.key == K_UP:
-            targetUser = min(targetUser + 0.01, 1.0)
-        elif e.type == KEYDOWN and e.key == K_DOWN:
-            targetUser = max(targetUser - 0.01, 0.0)
-
         # change goal
         elif e.type == KEYDOWN and e.key == K_n:
             set_new_goal()
 
+    # if we have a gamepad
+    if gamepad is not None:
+
+        # handle input from right stick
+        axis = gamepad.get_axis(3)
+        if abs(axis) > JOY_DEAD_ZONE:
+
+            sign = 1 if axis >= 0 else -1
+            scaledValue = JOY_AXIS_SCALE * (abs(axis) - JOY_DEAD_ZONE)
+            targetUser = min(max(targetUser + sign * scaledValue, 0), 1)
+
     return 1
 
+
 def main():
-    "This is the main loop"
+    """This is the main loop"""
+
+    global clock
+    global screen
+    global gamepad
+
+    # general initialization
+    random.seed()
+    clock = pygame.time.Clock()
+    pygame.init()
+
+    # screen initialization
+    screen = pygame.display.set_mode(WIN_SIZE)
+    pygame.display.set_caption("Visualizer")
+    screen.fill(COLOR_BACKGROUND)
+
+    # gamepad initialization
+    pygame.joystick.init()
+    num_joysticks = pygame.joystick.get_count()
+    if num_joysticks > 0:
+        gamepad = pygame.joystick.Joystick(0)
+        gamepad.init()  # now we will receive events for the gamepad
 
     # initialization
     start()
 
-    #main game loop
+    # main game loop
     while True:
 
         # main update
@@ -287,7 +306,9 @@ def main():
         clock.tick(60)
 
 
-# if python says run, then we should run
+# =================================
+# STARTUP
+# =================================
 if __name__ == '__main__':
     main()
 
