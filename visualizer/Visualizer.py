@@ -1,4 +1,10 @@
-import sys, random, math, pygame, csv
+import csv
+import math
+import pygame
+import random
+import serial
+import serial.tools.list_ports
+import sys
 from pygame.locals import *
 
 # =================================
@@ -38,6 +44,8 @@ STRIPE_CYCLE_SIZE = 40
 # app
 clock = None
 screen = None
+# serial
+serialObject = None
 # input
 gamepad = None
 # goal
@@ -53,7 +61,6 @@ goalTestMode = GOAL_TEST_MODE_INTENSITY
 numTestsRun = 0
 # user
 targetUser = 0.5
-currentUser = -1.0
 # writer
 testLogDataRows = None
 outputFilePrefix = "DEFAULT"
@@ -313,7 +320,7 @@ def draw_user_bar():
     """draws bar of specified color at location of currentUser"""
 
     # convert [0, 1] value to pixels
-    userCenterY = math.trunc(currentUser * WIN_SIZE[1] + 0.5)
+    userCenterY = math.trunc(targetUser * WIN_SIZE[1] + 0.5)
 
     # draw bar at pixel coordinates
     draw_horizontal_bar(userCenterY, USER_HALF_THICKNESS, COLOR_USER)
@@ -326,14 +333,6 @@ def update_logic_user():
 
 def update_draw_user():
     """draw update function for the user object"""
-
-    global currentUser
-
-    # if current and target user values are not the same
-    if targetUser != currentUser:
-
-        # set currentUser directly
-        currentUser = targetUser
 
     # draw new user
     draw_user_bar()
@@ -348,6 +347,7 @@ def start():
     global clock
     global screen
     global gamepad
+    global serialObject
 
     # general initialization
     random.seed()
@@ -365,6 +365,18 @@ def start():
     if num_joysticks > 0:
         gamepad = pygame.joystick.Joystick(0)
         gamepad.init()  # now we will receive events for the gamepad
+
+    # get the arduino port
+    ports = list(serial.tools.list_ports.comports())
+    arduinoPort = None
+    if len(ports) > 0:
+        arduinoPort = ports[0].device
+
+    # create the serial object and open the connection
+    serialObject = serial.Serial()
+    serialObject.port = arduinoPort
+    serialObject.baudrate = 115200
+    serialObject.open()
 
 
 def update_logic():
@@ -410,10 +422,18 @@ def process_input() -> int:
         # change to frequency mode
         if e.type == KEYUP and e.key == K_f:
             goalTestMode = GOAL_TEST_MODE_FREQUENCY
+            if serialObject is not None:
+                serialObject.write(bytearray('F', 'ascii'))
 
         # change to intensity mode
         if e.type == KEYUP and e.key == K_i:
             goalTestMode = GOAL_TEST_MODE_INTENSITY
+            if serialObject is not None:
+                serialObject.write(bytearray('I', 'ascii'))
+
+        # change to intensity mode
+        if e.type == KEYUP and e.key == K_q and serialObject is not None:
+            serialObject.write(bytearray('{000;000}', 'ascii'))
 
         # move goal to random location
         if e.type == KEYUP and e.key == K_g:
@@ -463,7 +483,7 @@ def main(argv):
 
         # boilerplate
         pygame.display.update()
-        clock.tick(120)
+        clock.tick(60)
 
 
 # =================================
