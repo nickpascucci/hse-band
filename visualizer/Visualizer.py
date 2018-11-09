@@ -1,10 +1,11 @@
 import csv
-import math
 import pygame
 import random
 import serial
 import serial.tools.list_ports
 import sys
+import threading
+import time
 from pygame.locals import *
 
 # =================================
@@ -16,6 +17,9 @@ WIN_SIZE = [640, 480]
 # input
 JOY_DEAD_ZONE = 0.2
 JOY_AXIS_SCALE = 0.0015
+# serial communication
+MESSAGING_INTERVAL = 0.5  # seconds
+SERIAL_THREAD_NAME = "serial_thread"
 # colors
 COLOR_BACKGROUND = 20, 20, 40
 COLOR_GOAL_TEST_INACTIVE = 255, 0, 0
@@ -27,7 +31,7 @@ GOAL_TWEEN_TIME = 200  # milliseconds
 GOAL_HALF_THICKNESS = 5
 GOAL_MIN_VALUE = 0.2
 GOAL_MAX_VALUE = 0.8
-GOAL_INTERVAL_TIME = 2000  # milliseconds
+GOAL_INTERVAL_TIME = 5000  # milliseconds
 GOALS_PER_TEST = 10
 GOAL_TEST_MODE_INTENSITY = 0
 GOAL_TEST_MODE_FREQUENCY = 1
@@ -44,8 +48,9 @@ STRIPE_CYCLE_SIZE = 40
 # app
 clock = None
 screen = None
-# serial
+# serial communication
 serialObject = None
+serialCommunicationThread = None
 # input
 gamepad = None
 # goal
@@ -122,6 +127,28 @@ def draw_horizontal_bar(centerY, halfThickness, drawColor, striped=False):
                     screen.set_at((x, y), drawColor)
 
 
+def format_for_serial_communication(value1: int, value2: int) -> bytearray:
+    """takes two values, formats for sending to arduino over serial"""
+
+    value1 = value1 % 256
+    value2 = value2 % 256
+
+    value1Str = str(value1)
+    value2Str = str(value2)
+
+    if value1 < 10:
+        value1Str = "00" + value1Str
+    elif value1 < 100:
+        value1Str = "0" + value1Str
+
+    if value2 < 10:
+        value2Str = "00" + value2Str
+    elif value2 < 100:
+        value2Str = "0" + value2Str
+
+    return bytearray(format('{%s;%s}' % (value1Str, value2Str)), 'ascii')
+
+
 # =================================
 # GOAL
 # =================================
@@ -129,7 +156,7 @@ def draw_goal_bar():
     """draws bar at location of currentGoal"""
 
     # convert [0, 1] value to pixels
-    targetCenterY = math.trunc(currentGoal * WIN_SIZE[1] + 0.5)
+    targetCenterY = round(currentGoal * WIN_SIZE[1])
 
     # draw bar at pixel coordinates
     drawColor = COLOR_GOAL_TEST_ACTIVE if goalTestActive else COLOR_GOAL_TEST_INACTIVE
@@ -223,37 +250,53 @@ def set_goal_test_active(active: bool):
     global numTestsRun
     global testLogDataRows
     global goalTestStartTime
+    global serialCommunicationThread
 
-    # if setting inactive
-    if not active:
+    # if we're actually changing the active state
+    if active != goalTestActive:
 
-        # turn off the test
-        goalTestActive = False
+        # if setting inactive from active
+        if not active:
 
-        # write out the log data
-        with open(format("%s_%d.csv" % (outputFilePrefix, numTestsRun)), 'w', newline='') as csvfile:
-            logWriter = csv.writer(csvfile)
-            logWriter.writerows(testLogDataRows)
+            # turn off the test
+            goalTestActive = False
 
-        # clear the testLog
-        testLogDataRows = None
+            # write out the log data
+            with open(format("%s_%d.csv" % (outputFilePrefix, numTestsRun)), 'w', newline='') as csvfile:
+                logWriter = csv.writer(csvfile)
+                logWriter.writerows(testLogDataRows)
 
-    # otherwise (setting active)
-    else:
+            # clear the testLog
+            testLogDataRows = None
 
-        # create some new goal values
-        repopulate_goal_list()
+            # wait for communication thread to close
+            if serialCommunicationThread is not None:
+                serialCommunicationThread.join()
+                serialCommunicationThread = None
 
-        # attempt to set a new goal (will fail if no goal values available)
-        if try_set_new_goal(doTween=False):
+        # otherwise, if setting active from inactive (and there's no comms thread going)
+        elif active and serialCommunicationThread is None:
 
-            # if successful, activate test
-            goalTestActive = True
-            numTestsRun = numTestsRun + 1
-            goalTestStartTime = pygame.time.get_ticks()
+            # create some new goal values
+            repopulate_goal_list()
 
-            # create object to hold log data for this test
-            testLogDataRows = [['Time', 'Current', 'Target', 'Error']]
+            # attempt to set a new goal (will fail if no goal values available)
+            if try_set_new_goal(doTween=False):
+
+                # if successful, activate test
+                goalTestActive = True
+                numTestsRun = numTestsRun + 1
+                goalTestStartTime = pygame.time.get_ticks()
+
+                # start the thread that will communicate with arduino
+                threading.Thread(name=SERIAL_THREAD_NAME, target=serial_communication_vibration_info).start()
+                threads = threading.enumerate()
+                for thread in threads:
+                    if thread.name == SERIAL_THREAD_NAME:
+                        serialCommunicationThread = thread  # threading.Thread was returning None, which is dumb
+
+                # create object to hold log data for this test
+                testLogDataRows = [['Time', 'Current', 'Target', 'Error']]
 
 
 def update_logic_goal():
@@ -320,7 +363,7 @@ def draw_user_bar():
     """draws bar of specified color at location of currentUser"""
 
     # convert [0, 1] value to pixels
-    userCenterY = math.trunc(targetUser * WIN_SIZE[1] + 0.5)
+    userCenterY = round(targetUser * WIN_SIZE[1])
 
     # draw bar at pixel coordinates
     draw_horizontal_bar(userCenterY, USER_HALF_THICKNESS, COLOR_USER)
@@ -336,6 +379,32 @@ def update_draw_user():
 
     # draw new user
     draw_user_bar()
+
+
+# =================================
+# THREADED SERIAL COMMUNICATION
+# =================================
+def serial_communication_vibration_info():
+    """handles communicating vibration info to the arduino"""
+
+    # so long as test is still active
+    while goalTestActive:
+
+        # calculate what values to pass
+        errorValue = abs(targetUser - targetGoal)
+        frontValue = round(255.0 * (1 - errorValue))
+        backValue = frontValue
+
+        # send the message
+        toSend = format_for_serial_communication(frontValue, backValue)
+        serialObject.write(toSend)
+
+        # wait a bit
+        time.sleep(MESSAGING_INTERVAL)
+
+    # set to 0's before exit
+    toSend = format_for_serial_communication(0, 0)
+    serialObject.write(toSend)
 
 
 # =================================
@@ -415,9 +484,13 @@ def process_input() -> int:
         if e.type == QUIT or (e.type == KEYUP and e.key == K_ESCAPE):
             return 0
 
-        # toggle testing on/off
-        if e.type == KEYUP and e.key == K_t:
-            set_goal_test_active(not goalTestActive)
+        # start test
+        if e.type == KEYUP and e.key == K_SPACE:
+            set_goal_test_active(True)
+
+        # stop test
+        if e.type == KEYUP and e.key == K_BACKSPACE:
+            set_goal_test_active(False)
 
         # change to frequency mode
         if e.type == KEYUP and e.key == K_f:
@@ -431,9 +504,13 @@ def process_input() -> int:
             if serialObject is not None:
                 serialObject.write(bytearray('I', 'ascii'))
 
-        # change to intensity mode
-        if e.type == KEYUP and e.key == K_q and serialObject is not None:
+        # stop the vibrating
+        if e.type == KEYUP and e.key == K_s and serialObject is not None:
             serialObject.write(bytearray('{000;000}', 'ascii'))
+
+        # print out number of running threads
+        if e.type == KEYUP and e.key == K_t:
+            print("Num Active Threads = %d" % threading.active_count())
 
         # move goal to random location
         if e.type == KEYUP and e.key == K_g:
@@ -484,6 +561,9 @@ def main(argv):
         # boilerplate
         pygame.display.update()
         clock.tick(60)
+
+    # set test inactive before exit
+    set_goal_test_active(False)
 
 
 # =================================
