@@ -13,7 +13,7 @@ from pygame.locals import *
 # =================================
 # app
 TITLE = "Visualizer"
-WIN_SIZE = [640, 480]
+WIN_SIZE = [640, 460]
 # input
 JOY_DEAD_ZONE = 0.2
 JOY_AXIS_SCALE = 0.0015
@@ -25,7 +25,7 @@ COLOR_BACKGROUND = 20, 20, 40
 COLOR_GOAL_TEST_INACTIVE = 255, 0, 0
 COLOR_GOAL_TEST_ACTIVE = 0, 255, 0
 COLOR_USER = 255, 240, 200
-COLOR_CIRCLE = 0, 255, 0
+COLOR_MODE_TEXT = 255, 255, 255
 # goal
 GOAL_TWEEN_TIME = 200  # milliseconds
 GOAL_HALF_THICKNESS = 5
@@ -60,10 +60,10 @@ goalTweenActive = False
 goalTweenTimeStart = 0.0
 goalValues = []
 goalTestActive = False
-goalTestStartTime = 0.0
+loggingStartTime = 0.0
 lastTestGoalSetTime = 0.0
 goalTestMode = GOAL_TEST_MODE_INTENSITY
-numTestsRun = 0
+numLogsMade = 0
 # user
 targetUser = 0.5
 # writer
@@ -74,6 +74,14 @@ outputFilePrefix = "DEFAULT"
 # =================================
 # HELPERS
 # =================================
+def text_to_screen(text, x, y, size = 50, color = (200, 000, 000)):
+
+    text = str(text)
+    font = pygame.font.Font(pygame.font.get_default_font(), size)
+    text = font.render(text, True, color)
+    screen.blit(text, (x, y))
+
+
 def interpolate(a: float, b: float, t: float, p: float) -> float:
     "interpolate from a to b with parameter t and power p"
 
@@ -127,6 +135,64 @@ def draw_horizontal_bar(centerY, halfThickness, drawColor, striped=False):
                     screen.set_at((x, y), drawColor)
 
 
+# =================================
+# LOGGING
+# =================================
+def add_frame_info_to_test_log_data():
+    """adds current frame info to test log data"""
+
+    # if we have a test log
+    if goalTestActive and testLogDataRows is not None:
+
+        # add stuff to it
+        elapsedTime = pygame.time.get_ticks() - loggingStartTime
+        error = targetUser - targetGoal
+        testLogDataRows.append([str(elapsedTime), str(targetUser), str(targetGoal), str(error)])
+
+
+def start_logging_data():
+    """begins the logging process"""
+
+    global testLogDataRows
+    global loggingStartTime
+
+    # note when logging started
+    loggingStartTime = pygame.time.get_ticks()
+
+    # create object to hold log data for this test
+    testLogDataRows = [['Time', 'Current', 'Target', 'Error']]
+
+
+def write_data_and_stop_logging():
+    """writes data stored in testLogDataRows to file"""
+
+    global testLogDataRows
+    global numLogsMade
+
+    with open(format("%s_%d.csv" % (outputFilePrefix, numLogsMade)), 'w', newline='') as csvfile:
+        logWriter = csv.writer(csvfile)
+        logWriter.writerows(testLogDataRows)
+
+    # increment number of logs made
+    numLogsMade = numLogsMade + 1
+
+    # clear the testLog
+    testLogDataRows = None
+
+
+# =================================
+# THREADED SERIAL COMMUNICATION
+# =================================
+def calculate_vibration_values():
+    """calculates vibration values to pass to arduino"""
+
+    errorValue = abs(targetUser - targetGoal)
+    frontValue = round(255.0 * (1 - errorValue))
+    backValue = frontValue
+
+    return (frontValue, backValue)
+
+
 def format_for_serial_communication(value1: int, value2: int) -> bytearray:
     """takes two values, formats for sending to arduino over serial"""
 
@@ -147,6 +213,80 @@ def format_for_serial_communication(value1: int, value2: int) -> bytearray:
         value2Str = "0" + value2Str
 
     return bytearray(format('{%s;%s}' % (value1Str, value2Str)), 'ascii')
+
+
+def create_serial_communication_object():
+    """creates object that will be used for communicating to arduino"""
+
+    global serialObject
+
+    # get the arduino port
+    ports = list(serial.tools.list_ports.comports())
+    arduinoPort = None
+    if len(ports) > 0:
+        arduinoPort = ports[0].device
+
+    # create the serial object and open the connection
+    serialObject = serial.Serial()
+    serialObject.port = arduinoPort
+    serialObject.baudrate = 115200
+
+
+def open_serial_communication():
+    """opens serial communication"""
+
+    if serialObject is not None:
+        serialObject.open()
+
+
+def close_serial_communication():
+    """closes serial communication"""
+
+    if serialObject is not None:
+        serialObject.close()
+
+
+def open_serial_communication_thread():
+    """opens thread that facilitates communication over serial port"""
+
+    global serialCommunicationThread
+
+    threading.Thread(name=SERIAL_THREAD_NAME, target=serial_communication_thread).start()
+    threads = threading.enumerate()
+    for thread in threads:
+        if thread.name == SERIAL_THREAD_NAME:
+            serialCommunicationThread = thread  # threading.Thread was returning None, which is dumb
+
+
+def wait_for_serial_communication_thread_close():
+    """waits for serial communication thread to close"""
+
+    global serialCommunicationThread
+
+    if serialCommunicationThread is not None:
+        serialCommunicationThread.join()
+        serialCommunicationThread = None
+
+
+def serial_communication_thread():
+    """handles threaded communication to the arduino"""
+
+    # so long as test is still active
+    while goalTestActive:
+
+        # calculate what values to pass
+        frontValue, backValue = calculate_vibration_values()
+
+        # send the message
+        toSend = format_for_serial_communication(frontValue, backValue)
+        serialObject.write(toSend)
+
+        # wait a bit
+        time.sleep(MESSAGING_INTERVAL)
+
+    # set to 0's before exit
+    toSend = format_for_serial_communication(0, 0)
+    serialObject.write(toSend)
 
 
 # =================================
@@ -247,9 +387,9 @@ def set_goal_test_active(active: bool):
     """toggles the active state of the goal test"""
 
     global goalTestActive
-    global numTestsRun
+    global numLogsMade
     global testLogDataRows
-    global goalTestStartTime
+    global loggingStartTime
     global serialCommunicationThread
 
     # if we're actually changing the active state
@@ -262,17 +402,10 @@ def set_goal_test_active(active: bool):
             goalTestActive = False
 
             # write out the log data
-            with open(format("%s_%d.csv" % (outputFilePrefix, numTestsRun)), 'w', newline='') as csvfile:
-                logWriter = csv.writer(csvfile)
-                logWriter.writerows(testLogDataRows)
-
-            # clear the testLog
-            testLogDataRows = None
+            write_data_and_stop_logging()
 
             # wait for communication thread to close
-            if serialCommunicationThread is not None:
-                serialCommunicationThread.join()
-                serialCommunicationThread = None
+            wait_for_serial_communication_thread_close()
 
         # otherwise, if setting active from inactive (and there's no comms thread going)
         elif active and serialCommunicationThread is None:
@@ -285,30 +418,12 @@ def set_goal_test_active(active: bool):
 
                 # if successful, activate test
                 goalTestActive = True
-                numTestsRun = numTestsRun + 1
-                goalTestStartTime = pygame.time.get_ticks()
-
-                # start the thread that will communicate with arduino
-                threading.Thread(name=SERIAL_THREAD_NAME, target=serial_communication_vibration_info).start()
-                threads = threading.enumerate()
-                for thread in threads:
-                    if thread.name == SERIAL_THREAD_NAME:
-                        serialCommunicationThread = thread  # threading.Thread was returning None, which is dumb
-
-                # create object to hold log data for this test
-                testLogDataRows = [['Time', 'Current', 'Target', 'Error']]
+                start_logging_data()
+                open_serial_communication_thread()
 
 
 def update_logic_goal():
     """handles logic updates for the goal"""
-
-    # if we have a running log
-    if testLogDataRows is not None:
-
-        # add stuff to it
-        elapsedTime = pygame.time.get_ticks() - goalTestStartTime
-        error = targetUser - targetGoal
-        testLogDataRows.append([str(elapsedTime), str(targetUser), str(targetGoal), str(error)])
 
     # if goal test is active
     if goalTestActive:
@@ -382,32 +497,6 @@ def update_draw_user():
 
 
 # =================================
-# THREADED SERIAL COMMUNICATION
-# =================================
-def serial_communication_vibration_info():
-    """handles communicating vibration info to the arduino"""
-
-    # so long as test is still active
-    while goalTestActive:
-
-        # calculate what values to pass
-        errorValue = abs(targetUser - targetGoal)
-        frontValue = round(255.0 * (1 - errorValue))
-        backValue = frontValue
-
-        # send the message
-        toSend = format_for_serial_communication(frontValue, backValue)
-        serialObject.write(toSend)
-
-        # wait a bit
-        time.sleep(MESSAGING_INTERVAL)
-
-    # set to 0's before exit
-    toSend = format_for_serial_communication(0, 0)
-    serialObject.write(toSend)
-
-
-# =================================
 # GENERAL
 # =================================
 def start():
@@ -416,7 +505,6 @@ def start():
     global clock
     global screen
     global gamepad
-    global serialObject
 
     # general initialization
     random.seed()
@@ -435,21 +523,16 @@ def start():
         gamepad = pygame.joystick.Joystick(0)
         gamepad.init()  # now we will receive events for the gamepad
 
-    # get the arduino port
-    ports = list(serial.tools.list_ports.comports())
-    arduinoPort = None
-    if len(ports) > 0:
-        arduinoPort = ports[0].device
-
-    # create the serial object and open the connection
-    serialObject = serial.Serial()
-    serialObject.port = arduinoPort
-    serialObject.baudrate = 115200
-    serialObject.open()
+    # create and open the serial communication object
+    create_serial_communication_object()
+    open_serial_communication()
 
 
 def update_logic():
     """Update function for logic - called once per frame"""
+
+    # add data to log
+    add_frame_info_to_test_log_data()
 
     # update the goal
     update_logic_goal()
@@ -470,12 +553,21 @@ def update_draw():
     # update the user
     update_draw_user()
 
+    # write current mode
+    currentModeText = "Mode: "
+    if goalTestMode == GOAL_TEST_MODE_INTENSITY:
+        currentModeText = currentModeText + "I"
+    elif goalTestMode == GOAL_TEST_MODE_FREQUENCY:
+        currentModeText = currentModeText + "F"
+    text_to_screen(currentModeText, WIN_SIZE[0] - 50, WIN_SIZE[1] - 15, 12, COLOR_MODE_TEXT)
+
 
 def process_input() -> int:
     """Receives and processes input"""
 
     global targetUser
     global gamepad
+    global goalTestMode
 
     # look at all current events
     for e in pygame.event.get():
@@ -503,10 +595,6 @@ def process_input() -> int:
             goalTestMode = GOAL_TEST_MODE_INTENSITY
             if serialObject is not None:
                 serialObject.write(bytearray('I', 'ascii'))
-
-        # stop the vibrating
-        if e.type == KEYUP and e.key == K_s and serialObject is not None:
-            serialObject.write(bytearray('{000;000}', 'ascii'))
 
         # print out number of running threads
         if e.type == KEYUP and e.key == K_t:
@@ -539,10 +627,13 @@ def main(argv):
     """This is the main loop"""
 
     global outputFilePrefix
+    global numLogsMade
 
     # parse command line
     if len(argv) > 0:
         outputFilePrefix = argv[0]
+    if len(argv) > 1:
+        numLogsMade = int(argv[1])
 
     # initialization
     start()
@@ -564,6 +655,9 @@ def main(argv):
 
     # set test inactive before exit
     set_goal_test_active(False)
+
+    # close serial communication
+    close_serial_communication()
 
 
 # =================================
