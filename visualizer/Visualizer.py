@@ -21,7 +21,7 @@ else:
 # =================================
 # app
 TITLE = "Visualizer"
-WIN_SIZE = [640, 460]
+WIN_SIZE = [960, 720]
 # input
 JOY_DEAD_ZONE = 0.2
 JOY_AXIS_SCALE = 0.0015
@@ -42,13 +42,13 @@ SIGNAL_MODE_INTENSITY = 0
 SIGNAL_MODE_FREQUENCY = 1
 # goal
 GOAL_TWEEN_TIME = 200  # milliseconds
-GOAL_HALF_THICKNESS = 5
+GOAL_HALF_THICKNESS = 6
 GOAL_MIN_VALUE = 0.2
 GOAL_MAX_VALUE = 0.8
-GOAL_INTERVAL_TIME = 1000  # milliseconds
-GOALS_PER_TEST = 10
+GOAL_INTERVAL_TIME = 5000  # milliseconds
+BASE_GOAL_VALUES = [0.2]*3 + [0.4]*3 + [0.6]*3 + [0.8]*3
 # user
-USER_HALF_THICKNESS = 3
+USER_HALF_THICKNESS = 4
 # other
 STRIPE_GAP_START = 15
 STRIPE_GAP_END = 25
@@ -73,7 +73,8 @@ targetGoal = 0.0
 currentGoal = 0.0
 goalTweenActive = False
 goalTweenTimeStart = 0.0
-goalValues = []
+originalGoalValues = None
+currentGoalValues = []
 goalTestActive = False
 loggingStartTime = 0.0
 lastTestGoalSetTime = 0.0
@@ -330,34 +331,62 @@ def draw_goal_bar():
 def repopulate_goal_list():
     """creates the list of randomly generated goals"""
 
-    global goalValues
+    global currentGoalValues
+    global originalGoalValues
 
-    # clear any existing values
-    goalValues.clear()
+    # if we haven't yet made our set of original goal values
+    if originalGoalValues is None:
 
-    # if we have more than one goal per testS
-    if GOALS_PER_TEST > 1:
+        # instantiate as empty
+        originalGoalValues = []
 
-        # make list of all indices
-        goalIndices = list(range(0, GOALS_PER_TEST))
+        # create list of tuples, value with its frequency
+        valueIndex = 0
+        frequencyIndex = 1
+        valuesAndFrequencies = []
+        valueSet = set(BASE_GOAL_VALUES)
+        for value in valueSet:
+            valuesAndFrequencies.append([value, BASE_GOAL_VALUES.count(value)])
 
-        # while we still have unused indices
-        goalSeparation = (GOAL_MAX_VALUE - GOAL_MIN_VALUE) / (GOALS_PER_TEST - 1)
-        while len(goalIndices) > 0:
+        # iterate while we have values with some non-zero frequency
+        lastUsedValue = -1.0
+        remainingValues = len(BASE_GOAL_VALUES)
+        while len(valuesAndFrequencies) > 0:
 
-            # grab a random index
-            indicesIndex = random.randrange(0, len(goalIndices))
-            goalIndex = goalIndices.pop(indicesIndex)
+            index = -1
 
-            # append goal value corresponding to that index to list
-            goalValue = GOAL_MIN_VALUE + goalIndex * goalSeparation
-            goalValues.append(goalValue)
+            # if any one value comprises over half remaining values, choose it
+            for i in range(len(valuesAndFrequencies)):
+                valueFrequency = valuesAndFrequencies[i]
+                if valueFrequency[frequencyIndex] / remainingValues > 0.5:
+                    index = i
+                    break
 
-    # otherwise (only a single goal)
-    else:
+            # if we haven't yet set the index
+            if index == -1:
 
-        # set single goal as average of min and max
-        goalValues = [(GOAL_MIN_VALUE+GOAL_MAX_VALUE)/2]
+                # make a list of possible indices to choose (can't repeat last)
+                newValueIndices = []
+                for i in range(len(valuesAndFrequencies)):
+                    valueFrequency = valuesAndFrequencies[i]
+                    if valueFrequency[valueIndex] != lastUsedValue:
+                        newValueIndices.append(i)
+
+                # grab a random one
+                index = random.choice(newValueIndices)
+
+            # append the value at chosen index
+            originalGoalValues.append(valuesAndFrequencies[index][valueIndex])
+            lastUsedValue = valuesAndFrequencies[index][valueIndex]
+
+            # decrement frequency and remainingValues
+            remainingValues = remainingValues - 1
+            valuesAndFrequencies[index][1] = valuesAndFrequencies[index][frequencyIndex] - 1
+            if valuesAndFrequencies[index][frequencyIndex] <= 0:
+                valuesAndFrequencies.pop(index)
+
+    # set current to a copy of the original
+    currentGoalValues = originalGoalValues[:]
 
 
 def try_set_new_goal(doTween=True, randomized=False) -> bool:
@@ -367,7 +396,7 @@ def try_set_new_goal(doTween=True, randomized=False) -> bool:
     global currentGoal
     global goalTweenActive
     global goalTweenTimeStart
-    global goalValues
+    global currentGoalValues
     global lastTestGoalSetTime
 
     # set the new goal
@@ -377,10 +406,10 @@ def try_set_new_goal(doTween=True, randomized=False) -> bool:
         targetGoal = random.random()
 
     # otherwise, if we have goal values to draw from...
-    elif len(goalValues) > 0:
+    elif len(currentGoalValues) > 0:
 
         # do so
-        targetGoal = goalValues.pop()
+        targetGoal = currentGoalValues.pop()
         lastTestGoalSetTime = pygame.time.get_ticks()
 
     else:
