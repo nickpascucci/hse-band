@@ -1,6 +1,7 @@
 // TODO Fix these values:
 #define MOTOR_F 10
 #define MOTOR_B 11
+#define PARSE_INDICATOR 2
 #define PACKET_SIZE 8
 
 #define DEFAULT_INTENSITY 128
@@ -37,7 +38,7 @@ void setup() {
   Serial.begin(115200);
   pinMode(MOTOR_F, OUTPUT);
   pinMode(MOTOR_B, OUTPUT);
-  Serial.println("I'm alive!");
+  pinMode(PARSE_INDICATOR, OUTPUT);
 }
 
 void loop() {
@@ -54,16 +55,14 @@ void read_values() {
 
      if (in_byte == 'I') {
       mode = INTENSITY;
-      Serial.print("Mode: Intensity");
     } else if (in_byte == 'F') {
       mode = FREQUENCY;
       last_front_state_change = millis();
       last_back_state_change = millis();
       front_state = LOW;
       back_state = LOW;
-      Serial.print("Mode: Frequency");
     } else if (in_byte == '{') {
-      Serial.println("Reading packet");
+      digitalWrite(PARSE_INDICATOR, HIGH);
 
       // Initialize read buffers to 0
       memset(front_buf, 0, sizeof(front_buf));
@@ -77,10 +76,8 @@ void read_values() {
         }
 
         in_byte = Serial.read();
-        Serial.print((char) in_byte);
 
         if (in_byte == ';') {
-          Serial.println(" <- Saw separator, moving on");
           break;
         } else {
           front_buf[i] = in_byte;
@@ -92,29 +89,20 @@ void read_values() {
           // Wait for data to become available
         }
         in_byte = Serial.read();
-        Serial.print((char) in_byte);
 
         if (in_byte == '}') { // Yay! A full packet arrived.
           success = 1;
-          Serial.println(" <- Received full packet");
           break;
         } else {
           back_buf[i] = in_byte;
         }
       }
+      digitalWrite(PARSE_INDICATOR, LOW);
       
       if (success) {
-        Serial.println("Here's what I read:");
-        Serial.print("{");
-        Serial.print(front_buf);
-        Serial.print(";");
-        Serial.print(back_buf);
-        Serial.println("}");
-
         front_value = atoi(front_buf);
         back_value = atoi(back_buf);
       } else {
-        Serial.print("Failed to read packet");
         continue;
       }
     }

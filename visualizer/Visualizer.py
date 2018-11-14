@@ -1,12 +1,20 @@
 import csv
-import pygame
+import platform
 import random
 import serial
 import serial.tools.list_ports
 import sys
 import threading
 import time
-from pygame.locals import *
+
+if "Darwin" in platform.platform():
+    from pygame_sdl2.locals import *
+    import pygame_sdl2
+    pygame = pygame_sdl2
+else:
+    from pygame.locals import *
+    import pygame
+
 
 # =================================
 # CONSTANTS
@@ -18,7 +26,7 @@ WIN_SIZE = [640, 460]
 JOY_DEAD_ZONE = 0.2
 JOY_AXIS_SCALE = 0.0015
 # serial communication
-MESSAGING_INTERVAL = 0.5  # seconds
+MESSAGING_INTERVAL = 0 # seconds
 SERIAL_THREAD_NAME = "serial_thread"
 # colors
 COLOR_BACKGROUND = 20, 20, 40
@@ -229,6 +237,10 @@ def create_serial_communication_object():
     ports = list(serial.tools.list_ports.comports())
     arduinoPort = None
     if len(ports) > 0:
+        print("Platform:", platform.platform())
+        if "Darwin" in platform.platform():
+            print("Running under OSX; looking for usbmodem")
+            ports = [p for p in ports if "usbmodem" in p.device]
         arduinoPort = ports[0].device
 
     # create the serial object and open the connection
@@ -236,6 +248,9 @@ def create_serial_communication_object():
         serialObject = serial.Serial()
         serialObject.port = arduinoPort
         serialObject.baudrate = 115200
+        print("Connecting to serial port", serialObject)
+    else:
+        print("ERROR: No serial port found")
 
 
 def open_serial_communication():
