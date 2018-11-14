@@ -26,15 +26,19 @@ COLOR_GOAL_TEST_INACTIVE = 255, 0, 0
 COLOR_GOAL_TEST_ACTIVE = 0, 255, 0
 COLOR_USER = 255, 240, 200
 COLOR_MODE_TEXT = 255, 255, 255
+# testing
+TEST_MODE_TRAINING = 0
+TEST_MODE_EXPERIMENTAL = 1
+TEST_MODE_COUNT = 2
+SIGNAL_MODE_INTENSITY = 0
+SIGNAL_MODE_FREQUENCY = 1
 # goal
 GOAL_TWEEN_TIME = 200  # milliseconds
 GOAL_HALF_THICKNESS = 5
 GOAL_MIN_VALUE = 0.2
 GOAL_MAX_VALUE = 0.8
-GOAL_INTERVAL_TIME = 5000  # milliseconds
+GOAL_INTERVAL_TIME = 1000  # milliseconds
 GOALS_PER_TEST = 10
-GOAL_TEST_MODE_INTENSITY = 0
-GOAL_TEST_MODE_FREQUENCY = 1
 # user
 USER_HALF_THICKNESS = 3
 # other
@@ -53,6 +57,9 @@ serialObject = None
 serialCommunicationThread = None
 # input
 gamepad = None
+# testing
+testMode = TEST_MODE_TRAINING
+signalMode = SIGNAL_MODE_INTENSITY
 # goal
 targetGoal = 0.0
 currentGoal = 0.0
@@ -62,7 +69,6 @@ goalValues = []
 goalTestActive = False
 loggingStartTime = 0.0
 lastTestGoalSetTime = 0.0
-goalTestMode = GOAL_TEST_MODE_INTENSITY
 numLogsMade = 0
 # user
 targetUser = 0.5
@@ -186,9 +192,8 @@ def write_data_and_stop_logging():
 def calculate_vibration_values():
     """calculates vibration values to pass to arduino"""
 
-    errorValue = abs(targetUser - targetGoal)
-    frontValue = round(255.0 * (1 - errorValue))
-    backValue = frontValue
+    frontValue = round(255.0 * targetUser)
+    backValue = round(255.0 * (1 - targetUser))
 
     return (frontValue, backValue)
 
@@ -227,9 +232,10 @@ def create_serial_communication_object():
         arduinoPort = ports[0].device
 
     # create the serial object and open the connection
-    serialObject = serial.Serial()
-    serialObject.port = arduinoPort
-    serialObject.baudrate = 115200
+    if arduinoPort is not None:
+        serialObject = serial.Serial()
+        serialObject.port = arduinoPort
+        serialObject.baudrate = 115200
 
 
 def open_serial_communication():
@@ -272,7 +278,7 @@ def serial_communication_thread():
     """handles threaded communication to the arduino"""
 
     # so long as test is still active
-    while goalTestActive:
+    while goalTestActive and serialObject is not None:
 
         # calculate what values to pass
         frontValue, backValue = calculate_vibration_values()
@@ -284,9 +290,12 @@ def serial_communication_thread():
         # wait a bit
         time.sleep(MESSAGING_INTERVAL)
 
-    # set to 0's before exit
-    toSend = format_for_serial_communication(0, 0)
-    serialObject.write(toSend)
+    # if we have a serial object
+    if serialObject is not None:
+
+        # set to 0's before exit
+        toSend = format_for_serial_communication(0, 0)
+        serialObject.write(toSend)
 
 
 # =================================
@@ -477,11 +486,14 @@ def update_draw_goal():
 def draw_user_bar():
     """draws bar of specified color at location of currentUser"""
 
-    # convert [0, 1] value to pixels
-    userCenterY = round(targetUser * WIN_SIZE[1])
+    # if we're in training mode
+    if testMode == TEST_MODE_TRAINING:
 
-    # draw bar at pixel coordinates
-    draw_horizontal_bar(userCenterY, USER_HALF_THICKNESS, COLOR_USER)
+        # convert [0, 1] value to pixels
+        userCenterY = round(targetUser * WIN_SIZE[1])
+
+        # draw bar at pixel coordinates
+        draw_horizontal_bar(userCenterY, USER_HALF_THICKNESS, COLOR_USER)
 
 
 def update_logic_user():
@@ -553,13 +565,13 @@ def update_draw():
     # update the user
     update_draw_user()
 
-    # write current mode
-    currentModeText = "Mode: "
-    if goalTestMode == GOAL_TEST_MODE_INTENSITY:
-        currentModeText = currentModeText + "I"
-    elif goalTestMode == GOAL_TEST_MODE_FREQUENCY:
-        currentModeText = currentModeText + "F"
-    text_to_screen(currentModeText, WIN_SIZE[0] - 50, WIN_SIZE[1] - 15, 12, COLOR_MODE_TEXT)
+    # write current signal mode
+    signalModeText = "Signal: "
+    if signalMode == SIGNAL_MODE_INTENSITY:
+        signalModeText = signalModeText + "I"
+    elif signalMode == SIGNAL_MODE_FREQUENCY:
+        signalModeText = signalModeText + "F"
+    text_to_screen(signalModeText, WIN_SIZE[0] - 50, WIN_SIZE[1] - 15, 12, COLOR_MODE_TEXT)
 
 
 def process_input() -> int:
@@ -567,7 +579,8 @@ def process_input() -> int:
 
     global targetUser
     global gamepad
-    global goalTestMode
+    global signalMode
+    global testMode
 
     # look at all current events
     for e in pygame.event.get():
@@ -586,19 +599,19 @@ def process_input() -> int:
 
         # change to frequency mode
         if e.type == KEYUP and e.key == K_f:
-            goalTestMode = GOAL_TEST_MODE_FREQUENCY
+            signalMode = SIGNAL_MODE_FREQUENCY
             if serialObject is not None:
                 serialObject.write(bytearray('F', 'ascii'))
 
         # change to intensity mode
         if e.type == KEYUP and e.key == K_i:
-            goalTestMode = GOAL_TEST_MODE_INTENSITY
+            signalMode = SIGNAL_MODE_INTENSITY
             if serialObject is not None:
                 serialObject.write(bytearray('I', 'ascii'))
 
-        # print out number of running threads
+        # change testing mode
         if e.type == KEYUP and e.key == K_t:
-            print("Num Active Threads = %d" % threading.active_count())
+            testMode = (testMode + 1) % TEST_MODE_COUNT
 
         # move goal to random location
         if e.type == KEYUP and e.key == K_g:
