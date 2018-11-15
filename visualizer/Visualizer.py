@@ -1,7 +1,6 @@
 import csv
 import platform
 import random
-import serial
 import serial.tools.list_ports
 import sys
 import threading
@@ -22,11 +21,12 @@ else:
 # app
 TITLE = "Visualizer"
 WIN_SIZE = [960, 720]
+FRAME_RATE = 60
 # input
 JOY_DEAD_ZONE = 0.2
 JOY_AXIS_SCALE = 0.0015
 # serial communication
-MESSAGING_INTERVAL = 0 # seconds
+MESSAGING_INTERVAL = 1/FRAME_RATE  # seconds
 SERIAL_THREAD_NAME = "serial_thread"
 # colors
 COLOR_BACKGROUND = 20, 20, 40
@@ -40,6 +40,11 @@ TEST_MODE_EXPERIMENTAL = 1
 TEST_MODE_COUNT = 2
 SIGNAL_MODE_INTENSITY = 0
 SIGNAL_MODE_FREQUENCY = 1
+SIGNAL_MODE_COUNT = 2
+MOTOR_MODE_EQUAL = 0
+MOTOR_MODE_OPPOSITE = 1
+MOTOR_MODE_NONE = 2
+MOTOR_MODE_COUNT = 3
 # goal
 GOAL_TWEEN_TIME = 200  # milliseconds
 GOAL_HALF_THICKNESS = 6
@@ -68,13 +73,14 @@ gamepad = None
 # testing
 testMode = TEST_MODE_TRAINING
 signalMode = SIGNAL_MODE_INTENSITY
+motorMode = MOTOR_MODE_EQUAL
 # goal
 targetGoal = 0.0
 currentGoal = 0.0
 goalTweenActive = False
 goalTweenTimeStart = 0.0
 originalGoalValues = None
-currentGoalValues = []
+goalValues = []
 goalTestActive = False
 loggingStartTime = 0.0
 lastTestGoalSetTime = 0.0
@@ -184,7 +190,23 @@ def write_data_and_stop_logging():
     global testLogDataRows
     global numLogsMade
 
-    with open(format("%s_%d.csv" % (outputFilePrefix, numLogsMade)), 'w', newline='') as csvfile:
+    testModeText = "Testing"
+    if testMode == TEST_MODE_TRAINING:
+        testModeText = "Training"
+
+    signalModeText = "Intensity"
+    if signalMode == SIGNAL_MODE_FREQUENCY:
+        signalModeText = "Frequency"
+
+    motorModeText = "Equal"
+    if motorMode == MOTOR_MODE_OPPOSITE:
+        motorModeText = "Opposite"
+    elif motorMode == MOTOR_MODE_NONE:
+        motorModeText = "None"
+
+    fileName = format("%s_%d_%s_%s_%s.csv" %
+                      (outputFilePrefix, numLogsMade, testModeText, signalModeText, motorModeText))
+    with open(fileName, 'w', newline='') as csvfile:
         logWriter = csv.writer(csvfile)
         logWriter.writerows(testLogDataRows)
 
@@ -201,8 +223,16 @@ def write_data_and_stop_logging():
 def calculate_vibration_values():
     """calculates vibration values to pass to arduino"""
 
-    frontValue = round(255.0 * targetUser)
-    backValue = round(255.0 * (1 - targetUser))
+    frontValue = 0
+    backValue = 0
+
+    if motorMode == MOTOR_MODE_EQUAL:
+        frontValue = round(255.0 * targetUser)
+        backValue = frontValue
+
+    elif motorMode == MOTOR_MODE_OPPOSITE:
+        frontValue = round(255.0 * targetUser)
+        backValue = round(255.0 * (1 - targetUser))
 
     return (frontValue, backValue)
 
@@ -331,62 +361,55 @@ def draw_goal_bar():
 def repopulate_goal_list():
     """creates the list of randomly generated goals"""
 
-    global currentGoalValues
-    global originalGoalValues
+    global goalValues
 
-    # if we haven't yet made our set of original goal values
-    if originalGoalValues is None:
+    # reset to empty
+    goalValues = []
 
-        # instantiate as empty
-        originalGoalValues = []
+    # create list of tuples, value with its frequency
+    valueIndex = 0
+    frequencyIndex = 1
+    valuesAndFrequencies = []
+    valueSet = set(BASE_GOAL_VALUES)
+    for value in valueSet:
+        valuesAndFrequencies.append([value, BASE_GOAL_VALUES.count(value)])
 
-        # create list of tuples, value with its frequency
-        valueIndex = 0
-        frequencyIndex = 1
-        valuesAndFrequencies = []
-        valueSet = set(BASE_GOAL_VALUES)
-        for value in valueSet:
-            valuesAndFrequencies.append([value, BASE_GOAL_VALUES.count(value)])
+    # iterate while we have values with some non-zero frequency
+    lastUsedValue = -1.0
+    remainingValues = len(BASE_GOAL_VALUES)
+    while len(valuesAndFrequencies) > 0:
 
-        # iterate while we have values with some non-zero frequency
-        lastUsedValue = -1.0
-        remainingValues = len(BASE_GOAL_VALUES)
-        while len(valuesAndFrequencies) > 0:
+        index = -1
 
-            index = -1
+        # if any one value comprises over half remaining values, choose it
+        for i in range(len(valuesAndFrequencies)):
+            valueFrequency = valuesAndFrequencies[i]
+            if valueFrequency[frequencyIndex] / remainingValues > 0.5:
+                index = i
+                break
 
-            # if any one value comprises over half remaining values, choose it
+        # if we haven't yet set the index
+        if index == -1:
+
+            # make a list of possible indices to choose (can't repeat last)
+            newValueIndices = []
             for i in range(len(valuesAndFrequencies)):
                 valueFrequency = valuesAndFrequencies[i]
-                if valueFrequency[frequencyIndex] / remainingValues > 0.5:
-                    index = i
-                    break
+                if valueFrequency[valueIndex] != lastUsedValue:
+                    newValueIndices.append(i)
 
-            # if we haven't yet set the index
-            if index == -1:
+            # grab a random one
+            index = random.choice(newValueIndices)
 
-                # make a list of possible indices to choose (can't repeat last)
-                newValueIndices = []
-                for i in range(len(valuesAndFrequencies)):
-                    valueFrequency = valuesAndFrequencies[i]
-                    if valueFrequency[valueIndex] != lastUsedValue:
-                        newValueIndices.append(i)
+        # append the value at chosen index
+        goalValues.append(valuesAndFrequencies[index][valueIndex])
+        lastUsedValue = valuesAndFrequencies[index][valueIndex]
 
-                # grab a random one
-                index = random.choice(newValueIndices)
-
-            # append the value at chosen index
-            originalGoalValues.append(valuesAndFrequencies[index][valueIndex])
-            lastUsedValue = valuesAndFrequencies[index][valueIndex]
-
-            # decrement frequency and remainingValues
-            remainingValues = remainingValues - 1
-            valuesAndFrequencies[index][1] = valuesAndFrequencies[index][frequencyIndex] - 1
-            if valuesAndFrequencies[index][frequencyIndex] <= 0:
-                valuesAndFrequencies.pop(index)
-
-    # set current to a copy of the original
-    currentGoalValues = originalGoalValues[:]
+        # decrement frequency and remainingValues
+        remainingValues = remainingValues - 1
+        valuesAndFrequencies[index][1] = valuesAndFrequencies[index][frequencyIndex] - 1
+        if valuesAndFrequencies[index][frequencyIndex] <= 0:
+            valuesAndFrequencies.pop(index)
 
 
 def try_set_new_goal(doTween=True, randomized=False) -> bool:
@@ -396,7 +419,7 @@ def try_set_new_goal(doTween=True, randomized=False) -> bool:
     global currentGoal
     global goalTweenActive
     global goalTweenTimeStart
-    global currentGoalValues
+    global goalValues
     global lastTestGoalSetTime
 
     # set the new goal
@@ -406,10 +429,10 @@ def try_set_new_goal(doTween=True, randomized=False) -> bool:
         targetGoal = random.random()
 
     # otherwise, if we have goal values to draw from...
-    elif len(currentGoalValues) > 0:
+    elif len(goalValues) > 0:
 
         # do so
-        targetGoal = currentGoalValues.pop()
+        targetGoal = goalValues.pop()
         lastTestGoalSetTime = pygame.time.get_ticks()
 
     else:
@@ -615,7 +638,17 @@ def update_draw():
         signalModeText = signalModeText + "I"
     elif signalMode == SIGNAL_MODE_FREQUENCY:
         signalModeText = signalModeText + "F"
-    text_to_screen(signalModeText, WIN_SIZE[0] - 50, WIN_SIZE[1] - 15, 12, COLOR_MODE_TEXT)
+    text_to_screen(signalModeText, WIN_SIZE[0] - 60, WIN_SIZE[1] - 15, 12, COLOR_MODE_TEXT)
+
+    # write current motor mode
+    sensorModeText = "Motor: "
+    if motorMode == MOTOR_MODE_EQUAL:
+        sensorModeText = sensorModeText + "E"
+    elif motorMode == MOTOR_MODE_OPPOSITE:
+        sensorModeText = sensorModeText + "O"
+    elif motorMode == MOTOR_MODE_NONE:
+        sensorModeText = sensorModeText + "N"
+    text_to_screen(sensorModeText, 5, WIN_SIZE[1] - 15, 12, COLOR_MODE_TEXT)
 
 
 def process_input() -> int:
@@ -625,6 +658,7 @@ def process_input() -> int:
     global gamepad
     global signalMode
     global testMode
+    global motorMode
 
     # look at all current events
     for e in pygame.event.get():
@@ -641,23 +675,23 @@ def process_input() -> int:
         if e.type == KEYUP and e.key == K_BACKSPACE:
             set_goal_test_active(False)
 
-        # change to frequency mode
-        if e.type == KEYUP and e.key == K_f:
-            signalMode = SIGNAL_MODE_FREQUENCY
+        # change signal mode
+        if e.type == KEYUP and e.key == K_s:
+            signalMode = (signalMode + 1) % SIGNAL_MODE_COUNT
             if serialObject is not None:
-                serialObject.write(bytearray('F', 'ascii'))
+                message = bytearray('F', 'ascii') if signalMode == SIGNAL_MODE_FREQUENCY \
+                    else bytearray('I', 'ascii')
+                serialObject.write(message)
 
-        # change to intensity mode
-        if e.type == KEYUP and e.key == K_i:
-            signalMode = SIGNAL_MODE_INTENSITY
-            if serialObject is not None:
-                serialObject.write(bytearray('I', 'ascii'))
+        # change motor mode
+        if e.type == KEYUP and e.key == K_m:
+            motorMode = (motorMode + 1) % MOTOR_MODE_COUNT
 
         # change testing mode
         if e.type == KEYUP and e.key == K_t:
             testMode = (testMode + 1) % TEST_MODE_COUNT
 
-        # move goal to random location
+        # debug move goal to random location
         if e.type == KEYUP and e.key == K_g:
             try_set_new_goal(randomized=True)
 
@@ -708,7 +742,7 @@ def main(argv):
 
         # boilerplate
         pygame.display.update()
-        clock.tick(60)
+        clock.tick(FRAME_RATE)
 
     # set test inactive before exit
     set_goal_test_active(False)
